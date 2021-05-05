@@ -13,6 +13,24 @@ For change history for [MOST][3], see [most/CHANGES.md](most/CHANGES.md).
 Changes since 7.1
 -----------------
 
+#### 5/5/21
+- Add experimental support for [MP-Element][30], a new, generalized
+  network and element modeling layer for MATPOWER. See also [MATPOWER
+  Technical Note 5][31]. Documentation not yet included in User's Manual.
+  - If MP-Element is installed, its modeling is used by default for the
+    following (can be turned off with `have_feature('mp_element', 0)`):
+    - DC power flow
+    - DC optimal power flow
+    - AC power flow for all except radial and hybrid Newton-Raphson
+      formulations/solvers, including a new `'FSOLVE'` option based on
+      `fsolve()` function
+    - AC continuation power flow
+    - AC OPF for solvers MIPS, `fmincon`, IPOPT, and Artelys Knitro, for
+      all formulations
+  - MP-Opt-Model object is used for power flow and continuation power flow
+    as well as OPF and is added as `om` field to power flow and CPF
+    `results` struct.
+
 #### 4/5/21
   - Fix typo in computation of CPF prediction error that had very minor
     effect on adaptive step size.
@@ -45,6 +63,10 @@ Changes since 7.1
 #### 11/30/20
   - Fix fatal bug in `int2ext()` when called with `mpopt` and an `int2ext`
     user callback function.
+
+#### 10/27/20
+- Add Implicit Z-bus Gauss power flow solver for distribution systems.
+  Select by setting `pf.alg` to `'ZG'`.
 
 
 Version 7.1 - *Oct 8, 2020*
@@ -3185,3 +3207,5 @@ First Public Release – *Jun 25, 1997*
 [27]: https://github.com/MATPOWER/mp-opt-model
 [28]: http://www.convexoptimization.com/wikimization/index.php/Gurobi_mex
 [29]: https://osqp.org
+[30]: https://github.com/MATPOWER/mp-element
+[31]: https://doi.org/10.5281/zenodo.4110676

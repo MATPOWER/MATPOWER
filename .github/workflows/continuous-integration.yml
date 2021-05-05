@@ -52,6 +52,12 @@ jobs:
         echo "INCLUDE_OSQP=1" >> $GITHUB_ENV
         echo "OSQP_PATH=$HOME/build/osqp-matlab" >> $GITHUB_ENV
 
+    - name: Include MP-Element?
+      if: startsWith(env.OCTAVE_VER, '4') != 1 && startsWith(env.OCTAVE_VER, '6.1') != 1
+      run: |
+        echo "INCLUDE_MP_ELEMENT=1" >> $GITHUB_ENV
+        echo "MP_ELEMENT_TAG=0.4" >> $GITHUB_ENV
+
     - name: Cache IPOPT Libs
       if: startsWith(matrix.os, 'macos') && env.INCLUDE_IPOPT
       id: cache-ipopt-libs
@@ -165,3 +171,18 @@ jobs:
 
     - name: Test MOST
       run: octave-cli --no-gui --eval "test_most(0,1)"
+
+    - name: Install MP-Element
+      if: env.INCLUDE_MP_ELEMENT
+      run: |
+        git clone --branch ${MP_ELEMENT_TAG} --depth=1 https://github.com/MATPOWER/mp-element.git ${GITHUB_WORKSPACE}/mp-element
+        octave-cli --no-gui --eval "install_matpower(1,1,1,1)"
+        octave-cli --no-gui --eval "if ~have_feature('mp_element'), exit(1); end"
+
+    - name: Test MP-Element
+      if: env.INCLUDE_MP_ELEMENT
+      run: octave-cli --no-gui --eval "test_mp_element(0,1)"
+
+    - name: Retest MATPOWER
+      if: env.INCLUDE_MP_ELEMENT
+      run: octave-cli --no-gui --eval "test_matpower(0,1)"

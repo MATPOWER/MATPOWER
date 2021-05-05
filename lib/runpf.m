@@ -97,6 +97,44 @@ end
 qlim = mpopt.pf.enforce_q_lims;         %% enforce Q limits on gens?
 dc = strcmp(upper(mpopt.model), 'DC');  %% use DC formulation?
 
+%% use MP-Element based version?
+default_to_mpe = have_feature('mp_element');
+    %% if 0, requires mpopt.exp.mpe = 1 to enable MP-Element version
+    %% if 1; requires mpopt.exp.mpe = 0 to disable MP-Element version
+use_mpe = 0;
+if (  default_to_mpe && ~(isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 0) ) || ...
+   ( ~default_to_mpe &&   isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 1  )
+    alg = upper(mpopt.pf.alg);
+    if dc || (strcmp(alg, 'DEFAULT') || strcmp(alg, 'NR') || ...
+              strcmp(alg, 'NR-SP') || strcmp(alg, 'NR-SC') || ...
+              strcmp(alg, 'NR-IP') || strcmp(alg, 'NR-IC') || ...
+              strcmp(alg, 'FDXB') || strcmp(alg, 'FDBX') || ...
+              strcmp(alg, 'FSOLVE') || strcmp(alg, 'GS') || ...
+              strcmp(alg, 'ZG')) && ...
+              mpopt.pf.v_cartesian ~= 2
+        use_mpe = 1;
+    end
+end
+
+%% shortcut formulation options via Newton solver name
+if ~dc
+    alg = upper(mpopt.pf.alg);
+    switch alg
+        case 'NR-SP'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 0);
+        case 'NR-SC'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 1);
+        case 'NR-SH'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 2);
+        case 'NR-IP'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 0);
+        case 'NR-IC'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 1);
+        case 'NR-IH'
+            mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 2);
+    end
+end
+
 %% read data
 mpc = loadcase(casedata);
 
@@ -107,6 +145,21 @@ end
 
 %% convert to internal indexing
 mpc = ext2int(mpc, mpopt);
+t0 = tic;
+if use_mpe
+    pf = mp_task_pf();
+    success = pf.run(mpc, mpopt).success;
+    r = pf.dm.mpc;
+    [bus, gen, branch] = deal(r.bus, r.gen, r.branch);
+    if dc
+        its = 1;
+    elseif pf.nm.np ~= 0
+        its = pf.mm.soln.output.iterations;
+    else
+        its = 0;
+    end
+else
+
 [baseMVA, bus, gen, branch] = deal(mpc.baseMVA, mpc.bus, mpc.gen, mpc.branch);
 
 if ~isempty(mpc.bus)
@@ -118,16 +171,18 @@ if ~isempty(mpc.bus)
     gbus = gen(on, GEN_BUS);                %% what buses are they at?
 
     %%-----  run the power flow  -----
-    t0 = tic;
     its = 0;            %% total iterations
     if mpopt.verbose > 0
         v = mpver('all');
         fprintf('\nMATPOWER Version %s, %s', v.Version, v.Date);
     end
+
     if dc                               %% DC formulation
         if mpopt.verbose > 0
           fprintf(' -- DC Power Flow\n');
         end
+        its = 1;
+
         %% initial state
         Va0 = bus(:, VA) * (pi/180);
 
@@ -140,7 +195,6 @@ if ~isempty(mpc.bus)
 
         %% "run" the power flow
         [Va, success] = dcpf(B, Pbus, Va0, ref, pv, pq);
-        its = 1;
 
         %% update data matrices with solution
         branch(:, [QF, QT]) = zeros(size(branch, 1), 2);
@@ -148,6 +202,7 @@ if ~isempty(mpc.bus)
         branch(:, PT) = -branch(:, PF);
         bus(:, VM) = ones(size(bus, 1), 1);
         bus(:, VA) = Va * (180/pi);
+
         %% update Pg for slack generator (1st gen at ref bus)
         %% (note: other gens at ref bus are accounted for in Pbus)
         %%      Pg = Pinj + Pload + Gs
@@ -159,21 +214,6 @@ if ~isempty(mpc.bus)
         end
         gen(refgen, PG) = gen(refgen, PG) + (B(ref, :) * Va - Pbus(ref)) * baseMVA;
     else                                %% AC formulation
-        alg = upper(mpopt.pf.alg);
-        switch alg
-            case 'NR-SP'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 0);
-            case 'NR-SC'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 1);
-            case 'NR-SH'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 0, 'pf.v_cartesian', 2);
-            case 'NR-IP'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 0);
-            case 'NR-IC'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 1);
-            case 'NR-IH'
-                mpopt = mpoption(mpopt, 'pf.current_balance', 1, 'pf.v_cartesian', 2);
-        end
         if mpopt.verbose > 0
             switch alg
                 case {'NR', 'NR-SP'}
@@ -192,8 +232,12 @@ if ~isempty(mpc.bus)
                     solver = 'fast-decoupled, XB';
                 case 'FDBX'
                     solver = 'fast-decoupled, BX';
+                case 'FSOLVE'
+                    solver = 'fsolve';
                 case 'GS'
                     solver = 'Gauss-Seidel';
+                case 'ZG'
+                    solver = 'Implicit Z-bus Gauss';
                 case 'PQSUM'
                     solver = 'Power Summation';
                 case 'ISUM'
@@ -206,7 +250,7 @@ if ~isempty(mpc.bus)
             fprintf(' -- AC Power Flow (%s)\n', solver);
         end
         switch alg
-            case {'NR', 'NR-SP', 'NR-SC', 'NR-SH', 'NR-IP', 'NR-IC', 'NR-IH'}  %% all 6 variants supported
+            case {'NR', 'NR-SP', 'NR-SC', 'NR-SH', 'NR-IP', 'NR-IC', 'NR-IH', 'FSOLVE'}  %% all 6 variants supported
             otherwise                   %% only power balance, polar is valid
                 if mpopt.pf.current_balance || mpopt.pf.v_cartesian
                     error('runpf: power flow algorithm ''%s'' only supports power balance, polar version\nI.e. both ''pf.current_balance'' and ''pf.v_cartesian'' must be set to 0.', alg);
@@ -217,6 +261,8 @@ if ~isempty(mpc.bus)
                 warnstr = 'Newton algorithm (current or cartesian/hybrid versions) do';
             elseif strcmp(alg, 'GS')
                 warnstr = 'Gauss-Seidel algorithm does';
+            elseif strcmp(alg, 'ZG')
+                warnstr = 'Implicit Z-bus Gauss algorithm does';
             else
                 warnstr = '';
             end
@@ -247,11 +293,11 @@ if ~isempty(mpc.bus)
 
         repeat = 1;
         while (repeat)
+            %% run the power flow
             %% function for computing V dependent complex bus power injections
             %% (generation - load)
             Sbus = @(Vm)makeSbus(baseMVA, bus, gen, mpopt, Vm);
 
-            %% run the power flow
             switch alg
                 case {'NR', 'NR-SP', 'NR-SC', 'NR-SH', 'NR-IP', 'NR-IC', 'NR-IH'}
                     if mpopt.pf.current_balance
@@ -279,22 +325,28 @@ if ~isempty(mpc.bus)
                     [V, success, iterations] = fdpf(Ybus, Sbus, V0, Bp, Bpp, ref, pv, pq, mpopt);
                 case 'GS'
                     [V, success, iterations] = gausspf(Ybus, Sbus([]), V0, ref, pv, pq, mpopt);
+                case 'ZG'
+                    %% get B matrix for updating Q at PV buses
+                    if isempty(pv)
+                        Bpp = [];
+                    else
+                        [Bp, Bpp] = makeB(baseMVA, bus, branch, 'FDBX');
+                    end
+                    [V, success, iterations] = zgausspf(Ybus, Sbus([]), V0, ref, pv, pq, Bpp, mpopt);
                 case {'PQSUM', 'ISUM', 'YSUM'}
                     [mpc, success, iterations] = radial_pf(mpc, mpopt);
                 otherwise
                     error('runpf: ''%s'' is not a valid power flow algorithm. See ''pf.alg'' details in MPOPTION help.', alg);
             end
-            its = its + iterations;
 
             %% update data matrices with solution
             switch alg
-                case {'NR', 'NR-SP', 'NR-SC', 'NR-SH', 'NR-IP', 'NR-IC', 'NR-IH', 'FDXB', 'FDBX', 'GS'}
+                case {'NR', 'NR-SP', 'NR-SC', 'NR-SH', 'NR-IP', 'NR-IC', 'NR-IH', 'FDXB', 'FDBX', 'FSOLVE', 'GS', 'ZG'}
                     [bus, gen, branch] = pfsoln(baseMVA, bus, gen, branch, Ybus, Yf, Yt, V, ref, pv, pq, mpopt);
                 case {'PQSUM', 'ISUM', 'YSUM'}
-                    bus = mpc.bus;
-                    gen = mpc.gen;
-                    branch = mpc.branch;
+                    [bus, gen, branch] = deal(mpc.bus, mpc.gen, mpc.branch);
             end
+            its = its + iterations;
 
             if success && qlim      %% enforce generator Q limits
                 %% find gens with violated Q constraints
@@ -384,13 +436,15 @@ if ~isempty(mpc.bus)
         end
     end
 else
-    t0 = tic;
     success = 0;
     its = 0;
     if mpopt.verbose
         fprintf('Power flow not valid : MATPOWER case contains no connected buses\n');
     end
 end
+
+end %% if use_mpe
+
 mpc.et = toc(t0);
 mpc.success = success;
 mpc.iterations = its;
@@ -399,6 +453,10 @@ mpc.iterations = its;
 %% convert back to original bus numbering & print results
 [mpc.bus, mpc.gen, mpc.branch] = deal(bus, gen, branch);
 results = int2ext(mpc);
+
+if success && use_mpe
+    results.om = pf.mm;
+end
 
 %% zero out result fields of out-of-service gens & branches
 if ~isempty(results.order.gen.status.off)

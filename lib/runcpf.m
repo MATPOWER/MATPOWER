@@ -181,6 +181,15 @@ plim        = mpopt.cpf.enforce_p_lims;    %% enforce active limits
 vlim        = mpopt.cpf.enforce_v_lims;    %% enforce voltage magnitude limits
 flim        = mpopt.cpf.enforce_flow_lims; %% enforce branch flow limits
 
+default_to_mpe = have_feature('mp_element');
+    %% if 0, requires mpopt.exp.mpe = 1 to enable mp_element version
+    %% if 1; requires mpopt.exp.mpe = 0 to disable mp_element version
+use_mpe = 0;
+if (  default_to_mpe && ~(isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 0) ) || ...
+   ( ~default_to_mpe &&   isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 1  )
+    use_mpe = 1;
+end
+
 %% register event functions (for event detection)
 %% and CPF callback functions (for event handling and other tasks)
 cpf_events = [];
@@ -363,6 +372,24 @@ if ~done.flag
     %% build admittance matrices
     [Ybus, Yf, Yt] = makeYbus(mpcb.baseMVA, mpcb.bus, mpcb.branch);
 
+    if use_mpe
+        cpf = mp_task_cpf();
+        success = cpf.run({mpcb, mpct}, mpopt).success;
+        mpct = cpf.dm.mpc;
+        mpct.et = toc(t0);
+        mpct.success = success;
+        out = cpf.mm.soln.output;
+        v_ = cpf.nm.soln.v;
+        cpf_results = out;
+        done.msg = out.done_msg;
+        if regexp(done.msg, 'base and target functions are identical')
+            done.msg = 'Base case and target case have identical load and generation';
+        elseif regexp(done.msg, 'Reached limit in \d+ continuation steps, lambda = .*\.')
+            n = regexp(done.msg, 'Reached limit in (?<steps>\d+) continuation steps, lambda = (?<lam>.*)\.', 'names');
+            done.msg = sprintf('Reached steady state loading limit in %s continuation steps, lambda = %s.', n.steps, n.lam);
+        end
+    else
+
     %% functions for computing base and target case V-dependent complex bus
     %% power injections: (generation - load)
     Sbusb = @(Vm)makeSbus(mpcb.baseMVA, mpcb.bus, mpcb.gen, mpopt, Vm);
@@ -539,7 +566,7 @@ if ~done.flag
                 %% sensitivity, otherwise change direction based on tangent
                 %% direction and manifold (eigenvalue)
                 if isempty(find(nx.z(nb+pq) > 0, 1))
-                    direction = sign(nx.z(end)*min(real(eigs(J,1,'SR',opts))));
+                    direction = sign(nx.z(end)*min(real(eigs(J,1,'sr',opts))));
                 end
             end
             rb_cnt_cb = 0;              %% reset rollback counter for callbacks
@@ -648,6 +675,7 @@ if ~done.flag
     mpct = cpf_current_mpc(cb_data.mpc_base, cb_data.mpc_target, Ybus, Yf, Yt, cb_data.ref, cb_data.pv, cb_data.pq, cx.V, cx.lam, mpopt);
     mpct.et = toc(t0);
     mpct.success = success;
+    end     %% if use_mpe
 
     %%-----  output results  -----
     %% convert back to original bus numbering & print results
@@ -664,6 +692,10 @@ if ~done.flag
     if ~isempty(results.order.branch.status.off)
       results.branch(results.order.branch.status.off, [PF QF PT QT]) = 0;
     end
+end
+
+if success && use_mpe
+    results.om = cpf.mm;
 end
 
 results.cpf.done_msg = done.msg;

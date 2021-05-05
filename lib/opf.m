@@ -222,23 +222,45 @@ end
 mpc = ext2int(mpc, mpopt);
 
 %%-----  construct OPF model object  -----
-om = opf_setup(mpc, mpopt);
+default_to_mpe = have_feature('mp_element');
+    %% if 0, requires mpopt.exp.mpe = 1 to enable mp_element version
+    %% if 1; requires mpopt.exp.mpe = 0 to disable mp_element version
+use_mpe = 0;
+if (  default_to_mpe && ~(isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 0) ) || ...
+   ( ~default_to_mpe &&   isfield(mpopt.exp, 'mpe') && mpopt.exp.mpe == 1  )
+    dc  = strcmp(upper(mpopt.model), 'DC');
+    alg = upper(mpopt.opf.ac.solver);
+    if dc || ~(strcmp(alg, 'MINOPF') || strcmp(alg, 'PDIPM') || ...
+                strcmp(alg, 'TRALM') || strcmp(alg, 'SDPOPF'))
+        use_mpe = 1;
+    end
+end
+if ~use_mpe
+    om = opf_setup(mpc, mpopt);
+end
 
 %%-----  execute the OPF  -----
 if nargout > 7
     mpopt.opf.return_raw_der = 1;
 end
-if ~isempty(mpc.bus)
-    [results, success, raw] = opf_execute(om, mpopt);
+if use_mpe
+    %% setup and run the OPF
+    opf = mp_task_opf();
+    opf.run(mpc, mpopt);
+    [results, success, raw] = opf.legacy_post_run(mpopt);
 else
-    results = mpc;
-    success = 0;
-    raw.output.message = 'MATPOWER case contains no connected buses';
-    if mpopt.verbose
-        fprintf('OPF not valid : %s\n', raw.output.message);
+    if ~isempty(mpc.bus)
+        [results, success, raw] = opf_execute(om, mpopt);
+    else
+        results = mpc;
+        success = 0;
+        raw.output.message = 'MATPOWER case contains no connected buses';
+        if mpopt.verbose
+            fprintf('OPF not valid : %s\n', raw.output.message);
+        end
     end
+    results.success = success;  %% make success available to subsequent callbacks
 end
-results.success = success;  %% make success available to subsequent callbacks
 
 %%-----  revert to original ordering, including out-of-service stuff  -----
 results = int2ext(results);
